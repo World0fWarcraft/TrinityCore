@@ -29,6 +29,7 @@
 #include "NPCHandler.h"
 #include "ObjectDefines.h"
 #include "ObjectGuid.h"
+#include "ObjectGuidSequenceGenerator.h"
 #include "Position.h"
 #include "QuestDef.h"
 #include "RaceMask.h"
@@ -71,22 +72,14 @@ enum SummonerType
     SUMMONER_TYPE_MAP           = 2
 };
 
-#pragma pack(push, 1)
-
 /// Key for storing temp summon data in TempSummonDataContainer
 struct TempSummonGroupKey
 {
-    TempSummonGroupKey(uint32 summonerEntry, SummonerType summonerType, uint8 group)
-        : _summonerEntry(summonerEntry), _summonerType(summonerType), _summonGroup(group)
-    {
-    }
-
     std::strong_ordering operator<=>(TempSummonGroupKey const& right) const = default;
 
-private:
-    uint32 _summonerEntry;      ///< Summoner's entry
-    SummonerType _summonerType; ///< Summoner's type, see SummonerType for available types
-    uint8 _summonGroup;         ///< Summon's group id
+    uint32 SummonerEntry;   ///< Summoner's entry
+    SummonerType Type;      ///< Summoner's type, see SummonerType for available types
+    uint8 SummonGroup;      ///< Summon's group id
 };
 
 /// Stores data for temp summons
@@ -97,8 +90,6 @@ struct TempSummonData
     TempSummonType type; ///< Summon type, see TempSummonType for available types
     Milliseconds time;   ///< Despawn time, usable only with certain temp summon types
 };
-
-#pragma pack(pop)
 
 // DB scripting commands
 enum ScriptCommands
@@ -1515,7 +1506,7 @@ class TC_GAME_API ObjectMgr
          */
         std::vector<TempSummonData> const* GetSummonGroup(uint32 summonerId, SummonerType summonerType, uint8 group) const
         {
-            TempSummonDataContainer::const_iterator itr = _tempSummonDataStore.find(TempSummonGroupKey(summonerId, summonerType, group));
+            auto itr = _tempSummonDataStore.find({ .SummonerEntry =  summonerId, .Type = summonerType, .SummonGroup = group });
             if (itr != _tempSummonDataStore.end())
                 return &itr->second;
 
@@ -1807,7 +1798,7 @@ class TC_GAME_API ObjectMgr
         // first free low guid for selected guid type
         ObjectGuidGenerator& GetGuidSequenceGenerator(HighGuid high);
 
-        std::map<HighGuid, std::unique_ptr<ObjectGuidGenerator>> _guidGenerators;
+        std::map<HighGuid, ObjectGuidGenerator> _guidGenerators;
         QuestContainer _questTemplates;
         std::vector<Quest const*> _questTemplatesAutoPush;
         QuestObjectivesByIdContainer _questObjectives;

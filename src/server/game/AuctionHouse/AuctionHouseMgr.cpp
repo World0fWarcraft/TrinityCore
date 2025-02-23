@@ -171,7 +171,7 @@ void AuctionPosting::BuildAuctionItem(WorldPackets::AuctionHouse::AuctionItem* a
     {
         auctionItem->Item.emplace();
         auctionItem->Item->Initialize(Items[0]);
-        auctionItem->Charges = std::max({ Items[0]->GetSpellCharges(0), Items[0]->GetSpellCharges(1), Items[0]->GetSpellCharges(2), Items[0]->GetSpellCharges(3), Items[0]->GetSpellCharges(4) });
+        auctionItem->Charges = Items[0]->GetSpellCharges();
         for (uint8 i = 0; i < MAX_INSPECTED_ENCHANTMENT_SLOT; i++)
         {
             uint32 enchantId = Items[0]->GetEnchantmentId(EnchantmentSlot(i));
@@ -910,10 +910,10 @@ void AuctionHouseObject::AddAuction(CharacterDatabaseTransaction trans, AuctionP
 
     if (ItemModifiedAppearanceEntry const* itemModifiedAppearance = auction.Items[0]->GetItemModifiedAppearance())
     {
-        auto itr = std::ranges::find(bucket->ItemModifiedAppearanceId, itemModifiedAppearance->ID, &std::pair<uint32, uint32>::first);
+        auto itr = std::ranges::find(bucket->ItemModifiedAppearanceId, itemModifiedAppearance->ID, Trinity::TupleElement<0>);
 
         if (itr == bucket->ItemModifiedAppearanceId.end())
-            itr = std::ranges::find(bucket->ItemModifiedAppearanceId, 0u, &std::pair<uint32, uint32>::first);
+            itr = std::ranges::find(bucket->ItemModifiedAppearanceId, 0u, Trinity::TupleElement<0>);
 
         if (itr != bucket->ItemModifiedAppearanceId.end())
         {

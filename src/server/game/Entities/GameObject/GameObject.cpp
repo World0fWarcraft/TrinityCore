@@ -935,7 +935,7 @@ void GameObject::AddToWorld()
         if (m_zoneScript)
             m_zoneScript->OnGameObjectCreate(this);
 
-        GetMap()->GetObjectsStore().Insert<GameObject>(GetGUID(), this);
+        GetMap()->GetObjectsStore().Insert<GameObject>(this);
         if (m_spawnId)
             GetMap()->GetGameObjectBySpawnIdStore().insert(std::make_pair(m_spawnId, this));
 
@@ -975,7 +975,7 @@ void GameObject::RemoveFromWorld()
 
         if (m_spawnId)
             Trinity::Containers::MultimapErasePair(GetMap()->GetGameObjectBySpawnIdStore(), m_spawnId, this);
-        GetMap()->GetObjectsStore().Remove<GameObject>(GetGUID());
+        GetMap()->GetObjectsStore().Remove<GameObject>(this);
     }
 }
 
@@ -2278,9 +2278,7 @@ bool GameObject::ActivateToQuest(Player const* target) const
     {
         case GAMEOBJECT_TYPE_QUESTGIVER:
         {
-            GameObject* go = const_cast<GameObject*>(this);
-            QuestGiverStatus questStatus = const_cast<Player*>(target)->GetQuestDialogStatus(go);
-            if (questStatus != QuestGiverStatus::None && questStatus != QuestGiverStatus::Future)
+            if ((target->GetQuestDialogStatus(this) & ~QuestGiverStatusFutureMask) != QuestGiverStatus::None)
                 return true;
             break;
         }

@@ -72,6 +72,7 @@
 #include "VMapManager2.h"
 #include "Vehicle.h"
 #include "World.h"
+#include "advstd.h"
 #include <G3D/g3dmath.h>
 #include <limits>
 #include <numeric>
@@ -1528,7 +1529,7 @@ void ObjectMgr::LoadEquipmentTemplates()
                 continue;
             }
 
-            if (std::ranges::none_of(InventoryTypesEquipable, [dbcItem](InventoryType inventoryType) { return inventoryType == dbcItem->InventoryType; }))
+            if (!advstd::ranges::contains(InventoryTypesEquipable, dbcItem->InventoryType))
             {
                 TC_LOG_ERROR("sql.sql", "Item (ID={}) in creature_equip_template.ItemID{} for CreatureID = {} and ID = {} is not equipable in a hand, forced to 0.",
                     equipmentInfo.Items[i].ItemId, i + 1, entry, id);
@@ -2084,7 +2085,7 @@ void ObjectMgr::LoadTempSummons()
 
         data.time                       = Milliseconds(fields[9].GetUInt32());
 
-        TempSummonGroupKey key(summonerId, summonerType, group);
+        TempSummonGroupKey key{ .SummonerEntry = summonerId, .Type = summonerType, .SummonGroup = group };
         _tempSummonDataStore[key].push_back(data);
 
         ++count;
@@ -3369,9 +3370,16 @@ void ObjectMgr::LoadItemTemplates()
 
     // Load item effects (spells)
     for (ItemXItemEffectEntry const* effectEntry : sItemXItemEffectStore)
+    {
         if (ItemTemplate* item = Trinity::Containers::MapGetValuePtr(_itemTemplateStore, effectEntry->ItemID))
+        {
             if (ItemEffectEntry const* effect = sItemEffectStore.LookupEntry(effectEntry->ItemEffectID))
-                item->Effects.push_back(effect);
+            {
+                auto itr = std::ranges::lower_bound(item->Effects, effect->LegacySlotIndex, {}, &ItemEffectEntry::LegacySlotIndex);
+                item->Effects.insert(itr, effect);
+            }
+        }
+    }
 
     TC_LOG_INFO("server.loading", ">> Loaded {} item templates in {} ms", _itemTemplateStore.size(), GetMSTimeDiffToNow(oldMSTime));
 }
@@ -3455,8 +3463,8 @@ void ObjectMgr::LoadVehicleTemplateAccessories()
 
     uint32 count = 0;
 
-    //                                                  0             1              2          3           4             5
-    QueryResult result = WorldDatabase.Query("SELECT `entry`, `accessory_entry`, `seat_id`, `minion`, `summontype`, `summontimer` FROM `vehicle_template_accessory`");
+    //                                                  0             1              2          3           4             5              6
+    QueryResult result = WorldDatabase.Query("SELECT `entry`, `accessory_entry`, `seat_id`, `minion`, `summontype`, `summontimer`, `RideSpellID` FROM `vehicle_template_accessory`");
 
     if (!result)
     {
@@ -3474,6 +3482,18 @@ void ObjectMgr::LoadVehicleTemplateAccessories()
         bool   isMinion     = fields[3].GetBool();
         uint8  summonType   = fields[4].GetUInt8();
         uint32 summonTimer  = fields[5].GetUInt32();
+
+        Optional<uint32> rideSpellId;
+        if (!fields[6].IsNull())
+        {
+            rideSpellId = fields[6].GetUInt32();
+
+            if (!sSpellMgr->GetSpellInfo(*rideSpellId, DIFFICULTY_NONE))
+            {
+                TC_LOG_ERROR("sql.sql", "Table `vehicle_template_accessory`: rideSpellId {} does not exist for entry {}.", *rideSpellId, entry);
+                continue;
+            }
+        }
 
         if (!GetCreatureTemplate(entry))
         {
@@ -3493,7 +3513,7 @@ void ObjectMgr::LoadVehicleTemplateAccessories()
             continue;
         }
 
-        _vehicleTemplateAccessoryStore[entry].push_back(VehicleAccessory(accessory, seatId, isMinion, summonType, summonTimer));
+        _vehicleTemplateAccessoryStore[entry].push_back(VehicleAccessory(accessory, seatId, isMinion, summonType, summonTimer, rideSpellId));
 
         ++count;
     }
@@ -3545,8 +3565,8 @@ void ObjectMgr::LoadVehicleAccessories()
 
     uint32 count = 0;
 
-    //                                                  0             1             2          3           4             5
-    QueryResult result = WorldDatabase.Query("SELECT `guid`, `accessory_entry`, `seat_id`, `minion`, `summontype`, `summontimer` FROM `vehicle_accessory`");
+    //                                                  0             1             2          3           4             5              6
+    QueryResult result = WorldDatabase.Query("SELECT `guid`, `accessory_entry`, `seat_id`, `minion`, `summontype`, `summontimer`, `RideSpellID` FROM `vehicle_accessory`");
 
     if (!result)
     {
@@ -3565,13 +3585,25 @@ void ObjectMgr::LoadVehicleAccessories()
         uint8  uiSummonType = fields[4].GetUInt8();
         uint32 uiSummonTimer= fields[5].GetUInt32();
 
+        Optional<uint32> rideSpellId;
+        if (!fields[6].IsNull())
+        {
+            rideSpellId = fields[6].GetUInt32();
+
+            if (!sSpellMgr->GetSpellInfo(*rideSpellId, DIFFICULTY_NONE))
+            {
+                TC_LOG_ERROR("sql.sql", "Table `vehicle_accessory`: rideSpellId {} does not exist for guid {}.", *rideSpellId, uiGUID);
+                continue;
+            }
+        }
+
         if (!GetCreatureTemplate(uiAccessory))
         {
             TC_LOG_ERROR("sql.sql", "Table `vehicle_accessory`: Accessory {} does not exist.", uiAccessory);
             continue;
         }
 
-        _vehicleAccessoryStore[uiGUID].push_back(VehicleAccessory(uiAccessory, uiSeat, bMinion, uiSummonType, uiSummonTimer));
+        _vehicleAccessoryStore[uiGUID].push_back(VehicleAccessory(uiAccessory, uiSeat, bMinion, uiSummonType, uiSummonTimer, rideSpellId));
 
         ++count;
     }
@@ -6703,8 +6735,8 @@ uint32 ObjectMgr::GetNearestTaxiNode(float x, float y, float z, uint32 mapid, ui
         if (!node || node->ContinentID != mapid || !isVisibleForFaction(node) || node->GetFlags().HasFlag(TaxiNodeFlags::IgnoreForFindNearest))
             continue;
 
-        uint32 field   = uint32((node->ID - 1) / 8);
-        uint32 submask = 1 << ((node->ID - 1) % 8);
+        uint32 field = uint32((node->ID - 1) / (sizeof(TaxiMask::value_type) * 8));
+        TaxiMask::value_type submask = TaxiMask::value_type(1 << ((node->ID - 1) % (sizeof(TaxiMask::value_type) * 8)));
 
         // skip not taxi network nodes
         if ((sTaxiNodesMask[field] & submask) == 0)
@@ -7394,14 +7426,14 @@ void ObjectMgr::SetHighestGuids()
 
     result = CharacterDatabase.Query("SELECT MAX(guid) FROM item_instance");
     if (result)
-        GetGuidSequenceGenerator(HighGuid::Item).Set((*result)[0].GetUInt64() + 1);
+        GetGenerator<HighGuid::Item>().Set((*result)[0].GetUInt64() + 1);
 
     // Cleanup other tables from nonexistent guids ( >= _hiItemGuid)
-    CharacterDatabase.PExecute("DELETE FROM character_inventory WHERE item >= '{}'", GetGuidSequenceGenerator(HighGuid::Item).GetNextAfterMaxUsed());    // One-time query
-    CharacterDatabase.PExecute("DELETE FROM mail_items WHERE item_guid >= '{}'", GetGuidSequenceGenerator(HighGuid::Item).GetNextAfterMaxUsed());        // One-time query
+    CharacterDatabase.PExecute("DELETE FROM character_inventory WHERE item >= '{}'", GetGenerator<HighGuid::Item>().GetNextAfterMaxUsed());     // One-time query
+    CharacterDatabase.PExecute("DELETE FROM mail_items WHERE item_guid >= '{}'", GetGenerator<HighGuid::Item>().GetNextAfterMaxUsed());         // One-time query
     CharacterDatabase.PExecute("DELETE a, ab, ai FROM auctionhouse a LEFT JOIN auction_bidders ab ON ab.auctionId = a.id LEFT JOIN auction_items ai ON ai.auctionId = a.id WHERE ai.itemGuid >= '{}'",
-        GetGuidSequenceGenerator(HighGuid::Item).GetNextAfterMaxUsed());       // One-time query
-    CharacterDatabase.PExecute("DELETE FROM guild_bank_item WHERE item_guid >= '{}'", GetGuidSequenceGenerator(HighGuid::Item).GetNextAfterMaxUsed());   // One-time query
+        GetGenerator<HighGuid::Item>().GetNextAfterMaxUsed());                                                                                  // One-time query
+    CharacterDatabase.PExecute("DELETE FROM guild_bank_item WHERE item_guid >= '{}'", GetGenerator<HighGuid::Item>().GetNextAfterMaxUsed());    // One-time query
 
     result = WorldDatabase.Query("SELECT MAX(guid) FROM transports");
     if (result)
@@ -7446,11 +7478,7 @@ void ObjectMgr::SetHighestGuids()
 
 ObjectGuidGenerator& ObjectMgr::GetGuidSequenceGenerator(HighGuid high)
 {
-    auto itr = _guidGenerators.find(high);
-    if (itr == _guidGenerators.end())
-        itr = _guidGenerators.insert(std::make_pair(high, std::make_unique<ObjectGuidGenerator>(high))).first;
-
-    return *itr->second;
+    return _guidGenerators.try_emplace(high, high).first->second;
 }
 
 uint32 ObjectMgr::GenerateAuctionID()
@@ -11749,13 +11777,9 @@ SpawnTrackingTemplateData const* ObjectMgr::GetSpawnTrackingData(uint32 spawnTra
 
 bool ObjectMgr::IsQuestObjectiveForSpawnTracking(uint32 spawnTrackingId, uint32 questObjectiveId) const
 {
-    auto itr = _spawnTrackingQuestObjectiveStore.find(spawnTrackingId);
-    if (itr != _spawnTrackingQuestObjectiveStore.end())
-    {
-        std::vector<QuestObjective const*> const* questObjectiveList = &itr->second;
-        if (std::ranges::find(*questObjectiveList, questObjectiveId, &QuestObjective::ID) != (*questObjectiveList).end())
-            return true;
-    }
+    if (std::vector<QuestObjective const*> const* questObjectiveList = Trinity::Containers::MapGetValuePtr(_spawnTrackingQuestObjectiveStore, spawnTrackingId))
+        return advstd::ranges::contains(*questObjectiveList, questObjectiveId, &QuestObjective::ID);
+
     return false;
 }
 

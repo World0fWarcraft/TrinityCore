@@ -485,7 +485,7 @@ bool Player::Create(ObjectGuid::LowType guidlow, WorldPackets::Character::Charac
     SetInventorySlotCount(INVENTORY_DEFAULT_SIZE);
 
     // set starting level
-    SetLevel(GetStartLevel(createInfo->Race, createInfo->Class, createInfo->TemplateSet));
+    SetLevel(GetStartLevel(createInfo->Race, createInfo->Class, createInfo->TemplateSet), false);
 
     InitRunes();
 
@@ -3305,13 +3305,14 @@ void Player::RemoveSpell(uint32 spell_id, bool disabled /*= false*/, bool learn_
 
     RemoveOwnedAura(spell_id, GetGUID());
 
+    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spell_id, DIFFICULTY_NONE);
+
     // remove pet auras
-    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    for (uint8 i = 0; i < spellInfo->GetEffects().size(); ++i)
         if (PetAura const* petSpell = sSpellMgr->GetPetAura(spell_id, i))
             RemovePetAura(petSpell);
 
     // update free primary prof.points (if not overflow setting, can be in case GM use before .learn prof. learning)
-    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spell_id, DIFFICULTY_NONE);
     if (spellInfo && spellInfo->IsPrimaryProfessionFirstRank())
     {
         uint32 freeProfs = GetFreePrimaryProfessionPoints()+1;
@@ -3401,7 +3402,7 @@ void Player::RemoveSpell(uint32 spell_id, bool disabled /*= false*/, bool learn_
             if (!learnNode->Active)
                 return false;
             return HasSpell(learnNode->SourceSpell);
-        }, &SpellLearnedBySpellMap::value_type::second);
+        }, Trinity::Containers::MapValue);
 
         if (hasOtherSpellTeachingThis)
             continue;
@@ -3493,12 +3494,12 @@ void Player::SetSpellFavorite(uint32 spellId, bool favorite)
 void Player::RemoveArenaSpellCooldowns(bool removeActivePetCooldowns)
 {
     // remove cooldowns on spells that have < 10 min CD
-    GetSpellHistory()->ResetCooldowns([](SpellHistory::CooldownStorageType::iterator itr)
+    GetSpellHistory()->ResetCooldowns([](SpellHistory::CooldownEntry const& cooldownEntry)
     {
-        SpellInfo const* spellInfo = sSpellMgr->AssertSpellInfo(itr->first, DIFFICULTY_NONE);
+        SpellInfo const* spellInfo = sSpellMgr->AssertSpellInfo(cooldownEntry.SpellId, DIFFICULTY_NONE);
         SpellHistory::Duration cooldown = 0s;
         SpellHistory::Duration categoryCooldown = 0s;
-        SpellHistory::GetCooldownDurations(spellInfo, itr->second.ItemId, &cooldown, nullptr, &categoryCooldown);
+        SpellHistory::GetCooldownDurations(spellInfo, cooldownEntry.ItemId, &cooldown, nullptr, &categoryCooldown);
         return cooldown < 10min
             && categoryCooldown < 10min
             && !spellInfo->HasAttribute(SPELL_ATTR6_DO_NOT_RESET_COOLDOWN_IN_ARENA);
@@ -8552,13 +8553,8 @@ void Player::ApplyArtifactPowerRank(Item* artifact, ArtifactPowerRankEntry const
             if (apply)
             {
                 for (AuraEffect* auraEffect : powerAura->GetBase()->GetAuraEffects())
-                {
-                    if (!auraEffect)
-                        continue;
-
                     if (powerAura->HasEffect(auraEffect->GetEffIndex()))
                         auraEffect->ChangeAmount(artifactPowerRank->AuraPointsOverride ? artifactPowerRank->AuraPointsOverride : auraEffect->GetSpellEffectInfo().CalcValue());
-                }
             }
             else
                 RemoveAura(powerAura);
@@ -10970,7 +10966,7 @@ InventoryResult Player::CanEquipItem(uint8 slot, uint16 &dest, Item* pItem, bool
             {
                 // Do not allow polearm to be equipped in the offhand (rare case for the only 1h polearm 41750)
                 if (type == INVTYPE_WEAPON && pProto->GetSubClass() == ITEM_SUBCLASS_WEAPON_POLEARM)
-                    return EQUIP_ERR_2HSKILLNOTFOUND;
+                    return EQUIP_ERR_WRONG_SLOT;
                 else if (type == INVTYPE_WEAPON)
                 {
                     if (!CanDualWield())
@@ -17091,7 +17087,7 @@ bool Player::HasQuestForCurrency(uint32 currencyId) const
     auto hasObjectiveTypeForCurrency = [&](QuestObjectiveType type)
     {
         return std::ranges::any_of(Trinity::Containers::MapEqualRange(m_questObjectiveStatus, { type, currencyId }),
-            isCompletableObjective, &QuestObjectiveStatusMap::value_type::second);
+            isCompletableObjective, Trinity::Containers::MapValue);
     };
 
     if (hasObjectiveTypeForCurrency(QUEST_OBJECTIVE_CURRENCY))
@@ -17359,7 +17355,7 @@ void Player::SendQuestReward(Quest const* quest, Creature const* questGiver, uin
             packet.LaunchGossip = quest->HasFlag(QUEST_FLAGS_LAUNCH_GOSSIP_COMPLETE);
 
         if (questGiver->IsQuestGiver())
-            packet.LaunchQuest = (GetQuestDialogStatus(questGiver) & ~QuestGiverStatus::Future) != QuestGiverStatus::None;
+            packet.LaunchQuest = (GetQuestDialogStatus(questGiver) & ~QuestGiverStatusFutureMask) != QuestGiverStatus::None;
 
         if (!quest->HasFlag(QUEST_FLAGS_AUTO_COMPLETE))
             if (Quest const* rewardQuest = GetNextQuest(questGiver, quest))
@@ -20827,20 +20823,17 @@ void Player::_SaveAuras(CharacterDatabaseTransaction trans)
 
         for (AuraEffect const* effect : aura->GetAuraEffects())
         {
-            if (effect)
-            {
-                index = 0;
-                stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_AURA_EFFECT);
-                stmt->setUInt64(index++, GetGUID().GetCounter());
-                stmt->setBinary(index++, key.Caster.GetRawValue());
-                stmt->setBinary(index++, key.Item.GetRawValue());
-                stmt->setUInt32(index++, key.SpellId);
-                stmt->setUInt32(index++, key.EffectMask);
-                stmt->setUInt8(index++, effect->GetEffIndex());
-                stmt->setInt32(index++, effect->GetAmount());
-                stmt->setInt32(index++, effect->GetBaseAmount());
-                trans->Append(stmt);
-            }
+            index = 0;
+            stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_AURA_EFFECT);
+            stmt->setUInt64(index++, GetGUID().GetCounter());
+            stmt->setBinary(index++, key.Caster.GetRawValue());
+            stmt->setBinary(index++, key.Item.GetRawValue());
+            stmt->setUInt32(index++, key.SpellId);
+            stmt->setUInt32(index++, key.EffectMask);
+            stmt->setUInt8(index++, effect->GetEffIndex());
+            stmt->setInt32(index++, effect->GetAmount());
+            stmt->setInt32(index++, effect->GetBaseAmount());
+            trans->Append(stmt);
         }
     }
 }
@@ -23477,7 +23470,7 @@ bool Player::BuyCurrencyFromVendorSlot(ObjectGuid vendorGuid, uint32 vendorSlot,
 }
 
 // Return true is the bought item has a max count to force refresh of window by caller
-bool Player::BuyItemFromVendorSlot(ObjectGuid vendorguid, uint32 vendorslot, uint32 item, uint8 count, uint8 bag, uint8 slot)
+bool Player::BuyItemFromVendorSlot(ObjectGuid vendorguid, uint32 vendorslot, uint32 item, uint32 count, uint8 bag, uint8 slot)
 {
     // cheating attempt
     if (count < 1) count = 1;
@@ -23647,11 +23640,11 @@ bool Player::BuyItemFromVendorSlot(ObjectGuid vendorguid, uint32 vendorslot, uin
     {
         double buyPricePerItem = double(pProto->GetBuyPrice()) / pProto->GetBuyCount();
         uint64 maxCount = MAX_MONEY_AMOUNT / buyPricePerItem;
-        if ((uint64)count > maxCount)
+        if (uint64(count) > maxCount)
         {
             TC_LOG_ERROR("entities.player.cheat", "Player::BuyItemFromVendorSlot: Player '{}' ({}) tried to buy item (ItemID: {}, Count: {}), causing overflow",
-                GetName(), GetGUID().ToString(), pProto->GetId(), (uint32)count);
-            count = (uint8)maxCount;
+                GetName(), GetGUID().ToString(), pProto->GetId(), count);
+            count = uint32(maxCount);
         }
         price = uint64(buyPricePerItem * count); //it should not exceed MAX_MONEY_AMOUNT
 
@@ -23692,16 +23685,11 @@ bool Player::BuyItemFromVendorSlot(ObjectGuid vendorguid, uint32 vendorslot, uin
 
     UpdateCriteria(CriteriaType::BuyItemsFromVendors, 1);
 
-    if (crItem->maxcount != 0) // bought
-    {
-        if (pProto->GetQuality() > ITEM_QUALITY_EPIC || (pProto->GetQuality() == ITEM_QUALITY_EPIC && pProto->GetBaseItemLevel() >= MinNewsItemLevel))
-            if (Guild* guild = GetGuild())
-                guild->AddGuildNews(GUILD_NEWS_ITEM_PURCHASED, GetGUID(), 0, item);
+    if (pProto->GetQuality() > ITEM_QUALITY_EPIC || (pProto->GetQuality() == ITEM_QUALITY_EPIC && pProto->GetBaseItemLevel() >= MinNewsItemLevel))
+        if (Guild* guild = GetGuild())
+            guild->AddGuildNews(GUILD_NEWS_ITEM_PURCHASED, GetGUID(), 0, item);
 
-        return true;
-    }
-
-    return false;
+    return crItem->maxcount != 0;
 }
 
 uint32 Player::GetMaxPersonalArenaRatingRequirement(uint32 minarenaslot) const
