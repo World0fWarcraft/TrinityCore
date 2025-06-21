@@ -270,6 +270,12 @@ enum class BattlePetSpeciesFlags : int32
 
 DEFINE_ENUM_FLAG(BattlePetSpeciesFlags);
 
+enum class BattlemasterType : int32
+{
+    Battleground    = 0,
+    Arena           = 1,
+};
+
 enum class BattlemasterListFlags : uint32
 {
     InternalOnly                = 0x01,
@@ -2134,8 +2140,8 @@ enum class SpellEffectAttributes
     AreaEffectsUseTargetRadius              = 0x00020000, /*NYI*/
     TeleportWithVehicle                     = 0x00040000, /*NYI*/
     ScalePointsByChallengeModeDamageScaler  = 0x00080000, /*NYI*/
-    DontFailSpellOnTargetingFailure         = 0x00100000, /*NYI*/
-    IgnoreDuringCooldownTimeRateCalculation = 0x00800000, /*NYI*/
+    DontFailSpellOnTargetingFailure         = 0x00100000,
+    IgnoreDuringCooldownTimeRateCalculation = 0x00800000,
     DamageOnlyAbsorbShields                 = 0x04000000, /*NYI*/ // Effects with this attribute only reduce absorbs on targets hit without actually dealing damage
 };
 

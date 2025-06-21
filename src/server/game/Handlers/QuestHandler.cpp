@@ -770,10 +770,10 @@ void WorldSession::HandleRequestWorldQuestUpdate(WorldPackets::Quest::RequestWor
 
 void WorldSession::HandlePlayerChoiceResponse(WorldPackets::Quest::ChoiceResponse& choiceResponse)
 {
-    if (_player->PlayerTalkClass->GetInteractionData().PlayerChoiceId != uint32(choiceResponse.ChoiceID))
+    if (_player->PlayerTalkClass->GetInteractionData().GetPlayerChoiceId() != uint32(choiceResponse.ChoiceID))
     {
         TC_LOG_ERROR("entities.player.cheat", "Error in CMSG_CHOICE_RESPONSE: {} tried to respond to invalid player choice {} (allowed {}) (possible packet-hacking detected)",
-            GetPlayerInfo(), choiceResponse.ChoiceID, _player->PlayerTalkClass->GetInteractionData().PlayerChoiceId);
+            GetPlayerInfo(), choiceResponse.ChoiceID, _player->PlayerTalkClass->GetInteractionData().GetPlayerChoiceId());
         return;
     }
 
@@ -879,19 +879,19 @@ void WorldSession::HandleSpawnTrackingUpdate(WorldPackets::Quest::SpawnTrackingU
 {
     WorldPackets::Quest::QuestPOIUpdateResponse response;
 
-    auto hasObjectTypeRequested = [](TypeMask objectTypeMask, SpawnObjectType objectType) -> bool
+    auto spawnTypeForObjectType = [](TypeMask objectTypeMask) -> SpawnObjectType
     {
         if (objectTypeMask & TYPEMASK_UNIT)
-            return objectType == SPAWN_TYPE_CREATURE;
-        else if (objectTypeMask & TYPEMASK_GAMEOBJECT)
-            return objectType == SPAWN_TYPE_GAMEOBJECT;
+            return SPAWN_TYPE_CREATURE;
+        if (objectTypeMask & TYPEMASK_GAMEOBJECT)
+            return SPAWN_TYPE_GAMEOBJECT;
 
-        return false;
+        return NUM_SPAWN_TYPES;
     };
 
     for (WorldPackets::Quest::SpawnTrackingRequestInfo const& requestInfo : spawnTrackingUpdate.SpawnTrackingRequests)
     {
-        WorldPackets::Quest::SpawnTrackingResponseInfo responseInfo;
+        WorldPackets::Quest::SpawnTrackingResponseInfo& responseInfo = response.SpawnTrackingResponses.emplace_back();
         responseInfo.SpawnTrackingID = requestInfo.SpawnTrackingID;
         responseInfo.ObjectID = requestInfo.ObjectID;
 
@@ -906,7 +906,8 @@ void WorldSession::HandleSpawnTrackingUpdate(WorldPackets::Quest::SpawnTrackingU
             responseInfo.PhaseUseFlags = spawnTrackingTemplateData->PhaseUseFlags;
 
             // Send spawn visibility data if available
-            if (requestInfo.ObjectTypeMask && requestInfo.ObjectTypeMask & (TYPEMASK_UNIT | TYPEMASK_GAMEOBJECT))
+            SpawnObjectType spawnType = spawnTypeForObjectType(TypeMask(requestInfo.ObjectTypeMask));
+            if (spawnType != NUM_SPAWN_TYPES)
             {
                 // There should only be one entity
                 for (auto const& [spawnTrackingId, data] : sObjectMgr->GetSpawnMetadataForSpawnTracking(requestInfo.SpawnTrackingID))
@@ -915,10 +916,10 @@ void WorldSession::HandleSpawnTrackingUpdate(WorldPackets::Quest::SpawnTrackingU
                     if (!spawnData)
                         continue;
 
-                    if (spawnData->id != (uint32)requestInfo.ObjectID)
+                    if (spawnData->id != uint32(requestInfo.ObjectID))
                         continue;
 
-                    if (!hasObjectTypeRequested(TypeMask(requestInfo.ObjectTypeMask), data->type))
+                    if (spawnType != data->type)
                         continue;
 
                     if (activeQuestObjective)
@@ -930,8 +931,6 @@ void WorldSession::HandleSpawnTrackingUpdate(WorldPackets::Quest::SpawnTrackingU
                 }
             }
         }
-
-        response.SpawnTrackingResponses.push_back(std::move(responseInfo));
     }
 
     SendPacket(response.Write());
