@@ -1472,8 +1472,8 @@ void GameObject::Update(uint32 diff)
                     {
                         // Environmental trap: Any player
                         Player* player = nullptr;
-                        Trinity::AnyPlayerInObjectRangeCheck checker(this, radius);
-                        Trinity::PlayerSearcher<Trinity::AnyPlayerInObjectRangeCheck> searcher(this, player, checker);
+                        Trinity::AnyUnitInObjectRangeCheck checker(this, radius);
+                        Trinity::PlayerSearcher searcher(this, player, checker);
                         Cell::VisitWorldObjects(this, searcher, radius);
                         target = player;
                     }
@@ -1967,7 +1967,9 @@ bool GameObject::LoadFromDB(ObjectGuid::LowType spawnId, Map* map, bool addToMap
     PhasingHandler::InitDbPhaseShift(GetPhaseShift(), data->phaseUseFlags, data->phaseId, data->phaseGroup);
     PhasingHandler::InitDbVisibleMapId(GetPhaseShift(), data->terrainSwapMap);
 
-    SetUpdateFieldValue(m_values.ModifyValue(&GameObject::m_gameObjectData).ModifyValue(&UF::GameObjectData::StateWorldEffectsQuestObjectiveID), data ? data->spawnTrackingQuestObjectiveId : 0);
+    // Set StateWorldEffectsQuestObjectiveID if there is only one linked objective for this gameobject
+    if (data && data->spawnTrackingQuestObjectives.size() == 1)
+        SetUpdateFieldValue(m_values.ModifyValue(&GameObject::m_gameObjectData).ModifyValue(&UF::GameObjectData::StateWorldEffectsQuestObjectiveID), data->spawnTrackingQuestObjectives.front());
 
     if (data->spawntimesecs >= 0)
     {
@@ -2686,6 +2688,10 @@ void GameObject::Use(Unit* user, bool ignoreCastInProgress /*= false*/)
                 // triggering linked GO
                 if (uint32 trapEntry = info->chest.linkedTrap)
                     TriggeringLinkedGameObject(trapEntry, player);
+
+                // Cast spell before sending loot
+                if (spellCaster && info->chest.spell)
+                    spellCaster->CastSpell(nullptr, info->chest.spell, spellArgs);
 
                 AddUniqueUse(player);
             }
@@ -3588,9 +3594,9 @@ SpawnTrackingStateData const* GameObject::GetSpawnTrackingStateDataForPlayer(Pla
 
     if (GameObjectData const* data = GetGameObjectData())
     {
-        if (data->spawnTrackingQuestObjectiveId && data->spawnTrackingData)
+        if (data->spawnTrackingData && !data->spawnTrackingQuestObjectives.empty())
         {
-            SpawnTrackingState state = player->GetSpawnTrackingStateByObjective(data->spawnTrackingData->SpawnTrackingId, data->spawnTrackingQuestObjectiveId);
+            SpawnTrackingState state = player->GetSpawnTrackingStateByObjectives(data->spawnTrackingData->SpawnTrackingId, data->spawnTrackingQuestObjectives);
             return &data->spawnTrackingStates[AsUnderlyingType(state)];
         }
     }
