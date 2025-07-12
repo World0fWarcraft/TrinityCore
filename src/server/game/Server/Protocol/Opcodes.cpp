@@ -17,8 +17,10 @@
 
 #include "Opcodes.h"
 #include "Log.h"
+#include "Util.h"
 #include "WorldSession.h"
 #include "Packets/AllPackets.h"
+#include <charconv>
 
 namespace
 {
@@ -58,7 +60,7 @@ bool OpcodeTable::ValidateClientOpcode(OpcodeClient opcode, char const* name) co
     }
 
     std::ptrdiff_t index = GetOpcodeArrayIndex(opcode);
-    if (index < 0 || index >= std::ptrdiff_t(NUM_CMSG_OPCODES))
+    if (index < 0 || index >= std::ssize(_internalTableClient))
     {
         TC_LOG_ERROR("network", "Tried to set handler for an invalid opcode {}", opcode);
         return false;
@@ -95,7 +97,7 @@ bool OpcodeTable::ValidateServerOpcode(OpcodeServer opcode, char const* name, Co
     }
 
     std::ptrdiff_t index = GetOpcodeArrayIndex(opcode);
-    if (index < 0 || index >= std::ptrdiff_t(NUM_SMSG_OPCODES))
+    if (index < 0 || index >= std::ssize(_internalTableServer))
     {
         TC_LOG_ERROR("network", "Tried to set handler for an invalid opcode {}", opcode);
         return false;
@@ -1009,12 +1011,12 @@ void OpcodeTable::InitializeClientOpcodes()
     DEFINE_HANDLER(CMSG_UPDATE_AADC_STATUS,                                 STATUS_LOGGEDIN,  PROCESS_INPLACE,      &WorldSession::HandleChatUpdateAADCStatus);
     DEFINE_HANDLER(CMSG_UPDATE_ACCOUNT_BANK_TAB_SETTINGS,                   STATUS_UNHANDLED, PROCESS_THREADUNSAFE, &WorldSession::Handle_NULL);
     DEFINE_HANDLER(CMSG_UPDATE_ACCOUNT_DATA,                                STATUS_AUTHED,    PROCESS_THREADUNSAFE, &WorldSession::HandleUpdateAccountData);
-    DEFINE_HANDLER(CMSG_UPDATE_AREA_TRIGGER_VISUAL,                         STATUS_UNHANDLED, PROCESS_INPLACE,      &WorldSession::Handle_NULL);
+    DEFINE_HANDLER(CMSG_UPDATE_AREA_TRIGGER_VISUAL,                         STATUS_LOGGEDIN,  PROCESS_INPLACE,      &WorldSession::HandleUpdateAreaTriggerVisual);
     DEFINE_HANDLER(CMSG_UPDATE_CLIENT_SETTINGS,                             STATUS_UNHANDLED, PROCESS_INPLACE,      &WorldSession::Handle_NULL);
     DEFINE_HANDLER(CMSG_UPDATE_CRAFTING_NPC_RECIPES,                        STATUS_UNHANDLED, PROCESS_INPLACE,      &WorldSession::Handle_NULL);
     DEFINE_HANDLER(CMSG_UPDATE_MISSILE_TRAJECTORY,                          STATUS_LOGGEDIN,  PROCESS_THREADUNSAFE, &WorldSession::HandleUpdateMissileTrajectory);
     DEFINE_HANDLER(CMSG_UPDATE_RAID_TARGET,                                 STATUS_LOGGEDIN,  PROCESS_THREADUNSAFE, &WorldSession::HandleUpdateRaidTargetOpcode);
-    DEFINE_HANDLER(CMSG_UPDATE_SPELL_VISUAL,                                STATUS_UNHANDLED, PROCESS_INPLACE,      &WorldSession::Handle_NULL);
+    DEFINE_HANDLER(CMSG_UPDATE_SPELL_VISUAL,                                STATUS_LOGGEDIN,  PROCESS_INPLACE,      &WorldSession::HandleUpdateAuraVisual);
     DEFINE_HANDLER(CMSG_UPDATE_VAS_PURCHASE_STATES,                         STATUS_UNHANDLED, PROCESS_INPLACE,      &WorldSession::Handle_NULL);
     DEFINE_HANDLER(CMSG_UPGRADE_GARRISON,                                   STATUS_UNHANDLED, PROCESS_THREADUNSAFE, &WorldSession::Handle_NULL);
     DEFINE_HANDLER(CMSG_UPGRADE_RUNEFORGE_LEGENDARY,                        STATUS_UNHANDLED, PROCESS_INPLACE,      &WorldSession::Handle_NULL);
@@ -2210,6 +2212,7 @@ void OpcodeTable::InitializeServerOpcodes()
     DEFINE_SERVER_OPCODE_HANDLER(SMSG_UNLOAD_CHILD_MAP,                        STATUS_UNHANDLED,    CONNECTION_TYPE_INSTANCE);
     DEFINE_SERVER_OPCODE_HANDLER(SMSG_UPDATE_AADC_STATUS_RESPONSE,             STATUS_NEVER,        CONNECTION_TYPE_REALM);
     DEFINE_SERVER_OPCODE_HANDLER(SMSG_UPDATE_ACCOUNT_DATA,                     STATUS_NEVER,        CONNECTION_TYPE_REALM);
+    DEFINE_SERVER_OPCODE_HANDLER(SMSG_UPDATE_ACCOUNT_DATA_COMPLETE,            STATUS_NEVER,        CONNECTION_TYPE_REALM);
     DEFINE_SERVER_OPCODE_HANDLER(SMSG_UPDATE_ACTION_BUTTONS,                   STATUS_NEVER,        CONNECTION_TYPE_INSTANCE);
     DEFINE_SERVER_OPCODE_HANDLER(SMSG_UPDATE_BNET_SESSION_KEY,                 STATUS_UNHANDLED,    CONNECTION_TYPE_REALM);
     DEFINE_SERVER_OPCODE_HANDLER(SMSG_UPDATE_CAPTURE_POINT,                    STATUS_NEVER,        CONNECTION_TYPE_REALM);
@@ -2283,8 +2286,8 @@ void OpcodeTable::InitializeServerOpcodes()
 #undef DEFINE_SERVER_OPCODE_HANDLER
 }
 
-template<typename OpcodeDefinition, std::size_t N, typename T>
-inline std::string GetOpcodeNameForLoggingImpl(std::array<OpcodeDefinition, N> const& definitions, T id)
+template<typename OpcodeDefinition, std::size_t N, typename T, typename FormatContext>
+static inline typename FormatContext::iterator GetOpcodeNameForLoggingImpl(std::array<OpcodeDefinition, N> const& definitions, T id, FormatContext& ctx)
 {
     uint32 opcode = uint32(id);
     char const* name = nullptr;
@@ -2300,15 +2303,34 @@ inline std::string GetOpcodeNameForLoggingImpl(std::array<OpcodeDefinition, N> c
     else
         name = "INVALID OPCODE";
 
-    return Trinity::StringFormat("[{0} 0x{1:06X} ({1})]", name, opcode);
+    std::array<char, 10> value;
+
+    std::ranges::copy_n("[", 1, ctx.out());
+    std::ranges::copy(name, CStringSentinel, ctx.out());
+    std::ranges::copy_n(" 0x", 3, ctx.out());
+    char const* hexEnd = std::to_chars(value.data(), value.data() + value.size(), opcode, 16).ptr;
+    if (std::ptrdiff_t written = std::ranges::distance(value.data(), hexEnd); written < 6)
+        std::ranges::fill_n(ctx.out(), 6 - written, '0');
+
+    std::ranges::transform(value.data(), hexEnd, ctx.out(), charToUpper);
+    std::ranges::copy_n(" (", 2, ctx.out());
+    std::ranges::copy(value.data(), std::to_chars(value.data(), value.data() + value.size(), opcode, 10).ptr, ctx.out());
+    std::ranges::copy_n(")]", 2, ctx.out());
+
+    return ctx.out();
 }
 
-std::string GetOpcodeNameForLogging(OpcodeClient opcode)
+template <typename FormatContext>
+typename FormatContext::iterator fmt::formatter<FormattedOpcodeName<OpcodeClient>>::format(FormattedOpcodeName<OpcodeClient> const& opcode, FormatContext& ctx) const
 {
-    return GetOpcodeNameForLoggingImpl(opcodeTable._internalTableClient, opcode);
+    return ::GetOpcodeNameForLoggingImpl(opcodeTable._internalTableClient, opcode.Opcode, ctx);
 }
 
-std::string GetOpcodeNameForLogging(OpcodeServer opcode)
+template <typename FormatContext>
+typename FormatContext::iterator fmt::formatter<FormattedOpcodeName<OpcodeServer>>::format(FormattedOpcodeName<OpcodeServer> const& opcode, FormatContext& ctx) const
 {
-    return GetOpcodeNameForLoggingImpl(opcodeTable._internalTableServer, opcode);
+    return ::GetOpcodeNameForLoggingImpl(opcodeTable._internalTableServer, opcode.Opcode, ctx);
 }
+
+template TC_GAME_API fmt::appender fmt::formatter<FormattedOpcodeName<OpcodeClient>>::format<fmt::format_context>(FormattedOpcodeName<OpcodeClient> const&, format_context&) const;
+template TC_GAME_API fmt::appender fmt::formatter<FormattedOpcodeName<OpcodeServer>>::format<fmt::format_context>(FormattedOpcodeName<OpcodeServer> const&, format_context&) const;
